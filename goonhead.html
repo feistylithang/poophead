@@ -1,0 +1,2486 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Toon Trouble</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:#111827;color:#fff;font-family:Arial,sans-serif}
+canvas{display:block;width:min(1100px,100vw);height:auto;margin:auto;background:#69bfc7;image-rendering:pixelated}
+#menu{position:fixed;inset:0;z-index:5;display:grid;place-items:center;overflow:auto;padding:18px;background:#111827}
+.panel{width:min(1000px,95vw);max-height:95vh;overflow:auto;padding:24px;text-align:center;border:6px solid #fff1bf;border-radius:22px;background:#5d4062;box-shadow:0 12px #151522}
+h1{margin:0;color:#ffe05c;font-size:clamp(38px,7vw,64px);text-shadow:4px 4px #b43c5b}
+h2{color:#ffe4b0}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:14px 0}
+button{padding:12px;border:3px solid #fff1bf;border-radius:12px;background:#80556b;color:#fff;cursor:pointer;font-weight:bold}
+button:hover,button.selected{background:#dc5b68}
+button.selected{outline:4px solid #ffe05c}
+.card{min-height:90px}
+#start{padding:15px 42px;background:#55c980;font-size:20px}
+p{color:#ffe4b0;line-height:1.45}
+@media(max-width:700px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+</style>
+</head>
+
+<body>
+<div id="menu">
+  <div class="panel">
+    <h1>TOON TROUBLE</h1>
+
+    <h2>Choose a Boss</h2>
+    <div id="bossChoices" class="grid"></div>
+    <p id="bossLabel">No boss selected</p>
+
+    <h2>Choose Two Weapons</h2>
+    <div id="weaponChoices" class="grid"></div>
+    <p id="weaponLabel">Choose two weapons</p>
+
+    <h2>Choose a Charm</h2>
+    <div id="charmChoices" class="grid"></div>
+    <p id="charmLabel">No charm selected</p>
+
+    <button id="start">START BOSS FIGHT</button>
+
+    <p>
+      Move/Aim: A/D/W/S · Jump/Parry: Space · Shoot: J<br>
+      Super: Shift · Dash: K · Lock movement: L · Switch: Q/E
+    </p>
+  </div>
+</div>
+
+<canvas id="game" width="1100" height="650"></canvas>
+
+<script>
+"use strict";
+
+/* ---------------- CONSTANTS ---------------- */
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+const menu = document.getElementById("menu");
+const bossChoices = document.getElementById("bossChoices");
+const weaponChoices = document.getElementById("weaponChoices");
+const charmChoices = document.getElementById("charmChoices");
+
+const bossLabel = document.getElementById("bossLabel");
+const weaponLabel = document.getElementById("weaponLabel");
+const charmLabel = document.getElementById("charmLabel");
+const startButton = document.getElementById("start");
+
+const W = canvas.width;
+const H = canvas.height;
+const FLOOR = 540;
+const GRAVITY = 0.55;
+const PARRY_WINDOW = 300;
+const MAX_CARDS = 5;
+const DAMAGE_PER_CARD = 550;
+
+const keys = {};
+
+/* ---------------- GAME STATE ---------------- */
+
+let selectedBoss = null;
+let selectedWeapons = [];
+let selectedCharm = null;
+let weaponSlot = 0;
+
+let state = "menu";
+let frame = 0;
+let cameraShake = 0;
+let screenFlash = 0;
+let movementLocked = false;
+
+let player = null;
+let boss = null;
+let twins = null;
+let platform = null;
+
+let bullets = [];
+let enemyBullets = [];
+let minions = [];
+let particles = [];
+let trails = [];
+let floatingText = [];
+
+let cards = 0;
+let cardProgress = 0;
+
+let charging = false;
+let chargeAmount = 0;
+let slashEffect = null;
+
+/* ---------------- DATA ---------------- */
+
+const bossData = [
+  ["minion", "MINION MASTER", "Stationary ground boss that summons minions.", "#a052c8"],
+  ["ceiling", "CEILING CANNON", "Bullet-heavy ceiling boss.", "#d85b69"],
+  ["titan", "TOON TITAN", "Bouncing boss with changing attacks.", "#397fc1"],
+  ["platform", "PLATFORM PANIC", "Stay above the dangerous floor.", "#e48c39"],
+  ["twins", "TWIN TROUBLE", "A summoner twin and a shooter twin.", "#55a9b5"]
+];
+
+const weapons = [
+  ["Peashooter", "Balanced shots", 14, 8, 14, "#27f5cc", "pea", "peaSuper"],
+  ["Spread Shot", "Five angled shots", 13, 4, 18, "#ff8b61", "pea", "spreadSuper"],
+  ["Chaser", "Homing shots", 4, 4, 18, "#77bd7a", "eye", "chaserSuper"],
+  ["Longshot", "Strong but slow", 27, 22, 52, "#f54927", "diamond", "longshotSuper"],
+  ["Charge Blast", "Hold J to charge", 12, 65, 75, "#ffd24d", "star", "chargeSuper"],
+  ["Lobber", "Bouncing arcing shots", 8, 14, 25, "#e978d1", "lob", "lobSuper"],
+  ["Flamecaster", "Fast weak fire", 17, 3, 5, "#ff4500", "flame", "flameSuper"],
+  ["Dagger", "Short slash and dash", 0, 22, 20, "#dce9f0", "blade", "daggerSuper"],
+  ["Gatling", "Charge an aimed barrage", 25, 7, 100, "#4169e1", "diamond", "gatlingSuper"],
+  ["Frost Shard", "Slows bosses", 20, 14, 55, "#87ceeb", "ice", "frostSuper"],
+  ["Shuriken Star", "Returns to player", 26, 16, 48, "#ffd700", "star", "starSuper"],
+  ["EXwave", "Repeating energy rings", 11, 12, 44, "#f29b38", "wave", "waveSuper"],
+  ["Grenade Launcher", "Explosive arcing shots", 11, 26, 48, "#c86b36", "grenade", "grenadeSuper"],
+  ["Twist Up", "Spiraling burst", 14, 13, 22, "#8d6ce8", "twist", "twistSuper"],
+  ["Crackshot", "Heavy pellet fan", 18, 10, 30, "#d5ab3d", "crack", "crackSuper"]
+];
+
+const charms = [
+  ["heart", "Extra Heart", "One additional hit."],
+  ["coffee", "Coffee", "Faster cooldowns."],
+  ["parry", "Parry Card", "Successful parries give two cards."],
+  ["smoke", "Smoke Dash", "Longer dash invincibility."],
+  ["double", "Double Jump", "Jump once more in the air."],
+  ["heavy", "Heavy Shot", "More damage but slower bullets."],
+  ["sugar", "P. Sugar", "Larger parry range."]
+];
+
+/* ---------------- MENU ---------------- */
+
+bossData.forEach((data, index) => {
+  const button = document.createElement("button");
+  button.className = "card";
+  button.style.borderColor = data[3];
+  button.innerHTML = `<strong>${data[1]}</strong><br><small>${data[2]}</small>`;
+
+  button.onclick = () => {
+    selectedBoss = data[0];
+
+    document.querySelectorAll("#bossChoices button")
+      .forEach((item, i) => item.classList.toggle("selected", i === index));
+
+    bossLabel.textContent = `Boss: ${data[1]}`;
+  };
+
+  bossChoices.appendChild(button);
+});
+
+weapons.forEach((data, index) => {
+  const button = document.createElement("button");
+  button.className = "card";
+  button.innerHTML = `<strong>${index + 1}. ${data[0]}</strong><br><small>${data[1]}</small>`;
+
+  button.onclick = () => {
+    if (selectedWeapons.includes(index)) {
+      selectedWeapons = selectedWeapons.filter(value => value !== index);
+    } else if (selectedWeapons.length < 2) {
+      selectedWeapons.push(index);
+    }
+
+    document.querySelectorAll("#weaponChoices button")
+      .forEach((item, i) => item.classList.toggle("selected", selectedWeapons.includes(i)));
+
+    weaponLabel.textContent =
+      selectedWeapons.length === 2
+        ? `${weapons[selectedWeapons[0]][0]} + ${weapons[selectedWeapons[1]][0]}`
+        : "Choose two weapons";
+  };
+
+  weaponChoices.appendChild(button);
+});
+
+charms.forEach((data, index) => {
+  const button = document.createElement("button");
+  button.className = "card";
+  button.innerHTML = `<strong>${data[1]}</strong><br><small>${data[2]}</small>`;
+
+  button.onclick = () => {
+    selectedCharm = data[0];
+
+    document.querySelectorAll("#charmChoices button")
+      .forEach((item, i) => item.classList.toggle("selected", i === index));
+
+    charmLabel.textContent = `Charm: ${data[1]}`;
+  };
+
+  charmChoices.appendChild(button);
+});
+
+startButton.onclick = () => {
+  if (!selectedBoss || selectedWeapons.length !== 2 || !selectedCharm) return;
+
+  menu.style.display = "none";
+  startGame();
+};
+
+/* ---------------- INPUT ---------------- */
+
+window.addEventListener("keydown", event => {
+  const key = event.key.toLowerCase();
+
+  keys[key] = true;
+
+  if (event.key === " ") {
+    event.preventDefault();
+
+    if (!event.repeat) {
+      jumpOrParry();
+    }
+  }
+
+  if (!event.repeat && key === "l") {
+    movementLocked = !movementLocked;
+  }
+
+  if (!event.repeat && key === "shift") {
+    useSuper();
+  }
+
+  if (!event.repeat && key === "q") {
+    weaponSlot = 0;
+  }
+
+  if (!event.repeat && key === "e") {
+    weaponSlot = 1;
+  }
+
+  if (!event.repeat && key === "r" && state !== "playing") {
+    returnToMenu();
+  }
+});
+
+window.addEventListener("keyup", event => {
+  const key = event.key.toLowerCase();
+  keys[key] = false;
+
+  if (key === "j") {
+    if (charging) releaseGatling();
+    if (player && player.charge > 0) releaseCharge();
+  }
+});
+
+/* ---------------- SETUP ---------------- */
+
+function startGame() {
+  state = "playing";
+  frame = 0;
+  weaponSlot = 0;
+  movementLocked = false;
+  cameraShake = 0;
+  screenFlash = 0;
+
+  cards = 0;
+  cardProgress = 0;
+  charging = false;
+  chargeAmount = 0;
+  slashEffect = null;
+
+  bullets = [];
+  enemyBullets = [];
+  minions = [];
+  particles = [];
+  trails = [];
+  floatingText = [];
+
+  player = {
+    x: 130,
+    y: FLOOR - 64,
+    w: 42,
+    h: 64,
+    vx: 0,
+    vy: 0,
+    facing: 1,
+    grounded: true,
+    crouching: false,
+    aimX: 1,
+    aimY: 0,
+    aimAngle: 0,
+    hp: selectedCharm === "heart" ? 4 : 3,
+    maxHp: selectedCharm === "heart" ? 4 : 3,
+    invincible: 0,
+    parryTimer: 0,
+    jumpCount: 0,
+    dashTimer: 0,
+    dashCooldown: 0,
+    dashHit: false,
+    shootCooldown: 0,
+    charge: 0
+  };
+
+  boss = {
+    type: selectedBoss,
+    x: 820,
+    y: 190,
+    w: 190,
+    h: 190,
+    hp: 3000,
+    maxHp: 3000,
+    phase: 1,
+    attackTimer: 90,
+    summonTimer: 160,
+    slowTimer: 0,
+    slow: 1
+  };
+
+  twins = null;
+  platform = null;
+
+  if (selectedBoss === "minion") {
+    boss.y = FLOOR - boss.h;
+  }
+
+  if (selectedBoss === "ceiling") {
+    boss.x = 760;
+    boss.y = 45;
+    boss.w = 240;
+    boss.h = 140;
+  }
+
+  if (selectedBoss === "platform") {
+    boss.x = 820;
+    boss.y = 100;
+    boss.w = 190;
+    boss.h = 180;
+
+    platform = {
+      x: 350,
+      y: 390,
+      w: 300,
+      h: 18,
+      vx: 2.1,
+      minX: 100,
+      maxX: 700
+    };
+
+    player.x = 470;
+    player.y = platform.y - player.h;
+  }
+
+  if (selectedBoss === "twins") {
+    boss.hp = 0;
+
+    twins = {
+      minion: {
+        x: 690,
+        y: 215,
+        w: 130,
+        h: 150,
+        hp: 950,
+        maxHp: 950,
+        attackTimer: 80
+      },
+      shooter: {
+        x: 885,
+        y: 285,
+        w: 130,
+        h: 150,
+        hp: 950,
+        maxHp: 950,
+        attackTimer: 100
+      },
+      phase: 1
+    };
+  }
+}
+
+function returnToMenu() {
+  state = "menu";
+  menu.style.display = "grid";
+
+  player = null;
+  boss = null;
+  twins = null;
+  platform = null;
+
+  bullets = [];
+  enemyBullets = [];
+  minions = [];
+  particles = [];
+  trails = [];
+  floatingText = [];
+}
+
+/* ---------------- AIM AND PLAYER ---------------- */
+
+function updateAim() {
+  let x = 0;
+  let y = 0;
+
+  if (keys.a) x--;
+  if (keys.d) x++;
+  if (keys.w) y--;
+  if (keys.s) y++;
+
+  if (x === 0 && y === 0) {
+    x = player.facing;
+  }
+
+  if (x !== 0) {
+    player.facing = x > 0 ? 1 : -1;
+  }
+
+  const length = Math.hypot(x, y) || 1;
+
+  player.aimX = x / length;
+  player.aimY = y / length;
+  player.aimAngle = Math.atan2(player.aimY, player.aimX);
+}
+
+function updateMovement() {
+  if (movementLocked || charging) {
+    player.vx *= 0.7;
+    return;
+  }
+
+  if (keys.a && !keys.d) {
+    player.vx = -4;
+  } else if (keys.d && !keys.a) {
+    player.vx = 4;
+  } else {
+    player.vx *= 0.78;
+  }
+}
+
+function jumpOrParry() {
+  if (state !== "playing") return;
+
+  if (!player.grounded) {
+    if (selectedCharm === "double" && player.jumpCount < 1) {
+      player.vy = -12;
+      player.jumpCount++;
+    } else {
+      beginParry();
+    }
+
+    return;
+  }
+
+  if (player.crouching) return;
+
+  player.vy = -12;
+  player.grounded = false;
+  player.jumpCount = 0;
+}
+
+function beginParry() {
+  player.parryTimer = PARRY_WINDOW;
+
+  const range = selectedCharm === "sugar" ? 105 : 82;
+  let success = false;
+
+  enemyBullets.forEach(projectile => {
+    if (!projectile.pink) return;
+
+    const distance = Math.hypot(
+      projectile.x - (player.x + player.w / 2),
+      projectile.y - (player.y + player.h / 2)
+    );
+
+    if (distance < range) {
+      projectile.pink = false;
+      projectile.reflected = true;
+      projectile.homing = true;
+      projectile.damage = 25;
+      projectile.life = 240;
+      projectile.vx = 8;
+      projectile.vy = 0;
+
+      player.vy = -9;
+      player.invincible = 220;
+
+      burst(projectile.x, projectile.y, "#ffd24d", 16);
+      success = true;
+    }
+  });
+
+  if (success) {
+    addCards(selectedCharm === "parry" ? 2 : 1);
+    cameraShake = 7;
+  }
+}
+
+/* ---------------- CARDS ---------------- */
+
+function addCards(amount) {
+  cards = Math.min(MAX_CARDS, cards + amount);
+  cardProgress = 0;
+}
+
+function addDamageProgress(amount) {
+  if (cards >= MAX_CARDS) return;
+
+  cardProgress += amount;
+
+  while (cardProgress >= DAMAGE_PER_CARD && cards < MAX_CARDS) {
+    cardProgress -= DAMAGE_PER_CARD;
+    cards++;
+  }
+}
+
+/* ---------------- WEAPONS ---------------- */
+
+function currentWeapon() {
+  return weapons[selectedWeapons[weaponSlot]];
+}
+
+function gunPosition() {
+  return {
+    x: player.facing > 0 ? player.x + player.w : player.x,
+    y: player.crouching ? player.y + 22 : player.y + 28
+  };
+}
+
+/*
+  This function fixes the error shown in the screenshot.
+  The old rewrite called muzzle(...) but did not define it.
+*/
+function muzzle(color = "#ffd24d") {
+  const gun = gunPosition();
+
+  particles.push({
+    x: gun.x,
+    y: gun.y,
+    vx: 0,
+    vy: 0,
+    color,
+    life: 8,
+    size: 18,
+    muzzle: true,
+    angle: player.aimAngle
+  });
+
+  for (let i = 0; i < 5; i++) {
+    particles.push({
+      x: gun.x,
+      y: gun.y,
+      vx: Math.random() * 5 - 2.5,
+      vy: Math.random() * 5 - 2.5,
+      color,
+      life: 12,
+      size: 3 + Math.random() * 4,
+      rotation: Math.random() * Math.PI
+    });
+  }
+
+  cameraShake = Math.max(cameraShake, 2);
+}
+
+function shoot() {
+  const data = currentWeapon();
+  const name = data[0];
+
+  if (name === "Dagger") {
+    slash();
+    return;
+  }
+
+  if (name === "Charge Blast") {
+    player.charge = Math.min(100, player.charge + 1.2);
+    if (player.charge >= 100) muzzle("#ffd24d");
+    return;
+  }
+
+  if (name === "Gatling") {
+    charging = true;
+    chargeAmount = Math.min(120, chargeAmount + 1.2);
+
+    if (chargeAmount >= 120) {
+      muzzle("#4169e1");
+      releaseGatling();
+    }
+
+    return;
+  }
+
+  if (player.shootCooldown > 0) return;
+
+  player.shootCooldown = Math.ceil(
+    data[4] * (selectedCharm === "coffee" ? 0.85 : 1)
+  );
+
+  muzzle(data[5]);
+
+  if (name === "Spread Shot") {
+    [-0.28, -0.14, 0, 0.14, 0.28]
+      .forEach(offset => createPlayerBullet(offset));
+  } else if (name === "Flamecaster") {
+    fireFlame();
+  } else if (name === "EXwave") {
+    fireWave();
+  } else if (name === "Grenade Launcher") {
+    fireGrenade();
+  } else if (name === "Twist Up") {
+    fireTwistUp();
+  } else if (name === "Crackshot") {
+    fireCrackshot();
+  } else {
+    createPlayerBullet();
+  }
+}
+
+function createPlayerBullet(offset = 0) {
+  const data = currentWeapon();
+  const gun = gunPosition();
+  const angle = player.aimAngle + offset;
+
+  const heavy = selectedCharm === "heavy";
+  const speed = heavy ? data[2] * 0.82 : data[2];
+  const damage = heavy ? data[3] * 1.15 : data[3];
+
+  bullets.push({
+    x: gun.x,
+    y: gun.y,
+    vx: Math.cos(angle) * speed,
+    vy: Math.sin(angle) * speed,
+    type: data[0],
+    damage,
+    color: data[5],
+    shape: data[6],
+    size: 8,
+    life: 180,
+    rotation: 0,
+    opacity: 1,
+    returning: false,
+    bounces: 0,
+    startX: gun.x,
+    startY: gun.y
+  });
+}
+
+function fireFlame() {
+  const data = currentWeapon();
+  const gun = gunPosition();
+
+  for (let i = 0; i < 3; i++) {
+    const angle = player.aimAngle + (Math.random() - 0.5) * .4;
+
+    bullets.push({
+      x: gun.x,
+      y: gun.y,
+      vx: Math.cos(angle) * data[2],
+      vy: Math.sin(angle) * data[2],
+      type: "Flamecaster",
+      damage: data[3],
+      color: data[5],
+      shape: "flame",
+      size: 8,
+      life: 80,
+      rotation: angle,
+      opacity: 1
+    });
+  }
+}
+
+function fireWave() {
+  const data = currentWeapon();
+  const gun = gunPosition();
+
+  bullets.push({
+    x: gun.x,
+    y: gun.y,
+    vx: player.aimX * data[2],
+    vy: player.aimY * data[2],
+    type: "EXwave",
+    damage: data[3],
+    color: data[5],
+    shape: "wave",
+    size: 12,
+    life: 145,
+    rotation: player.aimAngle,
+    hitCooldown: 0,
+    opacity: 1
+  });
+}
+
+function fireGrenade() {
+  const data = currentWeapon();
+  const gun = gunPosition();
+
+  bullets.push({
+    x: gun.x,
+    y: gun.y,
+    vx: player.aimX * data[2],
+    vy: player.aimY * data[2] - 1,
+    type: "Grenade",
+    damage: data[3],
+    color: data[5],
+    shape: "grenade",
+    size: 10,
+    life: 130,
+    gravity: .22,
+    rotation: 0,
+    opacity: 1
+  });
+}
+
+function fireTwistUp() {
+  const data = currentWeapon();
+  const gun = gunPosition();
+
+  for (let i = -2; i <= 2; i++) {
+    const angle = player.aimAngle + i * .17;
+
+    bullets.push({
+      x: gun.x,
+      y: gun.y,
+      vx: Math.cos(angle) * data[2],
+      vy: Math.sin(angle) * data[2] - 1.4,
+      type: "Twist Up",
+      damage: data[3],
+      color: data[5],
+      shape: "twist",
+      size: 8,
+      life: 90,
+      rotation: angle,
+      opacity: 1
+    });
+  }
+}
+
+function fireCrackshot() {
+  const data = currentWeapon();
+  const gun = gunPosition();
+
+  for (let i = -2; i <= 2; i++) {
+    const angle = player.aimAngle + i * .13;
+
+    bullets.push({
+      x: gun.x,
+      y: gun.y,
+      vx: Math.cos(angle) * data[2],
+      vy: Math.sin(angle) * data[2],
+      type: "Crackshot",
+      damage: data[3],
+      color: data[5],
+      shape: "crack",
+      size: 7,
+      life: 100,
+      rotation: angle,
+      opacity: 1
+    });
+  }
+}
+
+function slash() {
+  if (player.shootCooldown > 0) return;
+
+  const data = currentWeapon();
+  player.shootCooldown = data[4];
+
+  slashEffect = {
+    x: player.x + player.w / 2 + player.aimX * 46,
+    y: player.y + player.h / 2 + player.aimY * 46,
+    angle: player.aimAngle,
+    life: 12
+  };
+
+  damageAt(slashEffect.x, slashEffect.y, 42, data[3]);
+}
+
+function releaseCharge() {
+  if (
+    currentWeapon()[0] !== "Charge Blast" ||
+    player.charge < 10 ||
+    player.shootCooldown > 0
+  ) {
+    return;
+  }
+
+  const gun = gunPosition();
+
+  bullets.push({
+    x: gun.x,
+    y: gun.y,
+    vx: player.aimX * 12,
+    vy: player.aimY * 12,
+    type: "Charge Blast",
+    damage: 18 + player.charge * .35,
+    color: "#ffd24d",
+    shape: "star",
+    size: 16 + player.charge * .1,
+    life: 120,
+    rotation: 0,
+    opacity: 1
+  });
+
+  player.charge = 0;
+  player.shootCooldown = 75;
+}
+
+function releaseGatling() {
+  if (!charging || chargeAmount <= 0) return;
+
+  const data = currentWeapon();
+  const gun = gunPosition();
+  const amount = Math.ceil(chargeAmount / 20);
+
+  for (let i = 0; i < amount; i++) {
+    const angle = player.aimAngle + (i - (amount - 1) / 2) * .1;
+
+    bullets.push({
+      x: gun.x,
+      y: gun.y,
+      vx: Math.cos(angle) * 24,
+      vy: Math.sin(angle) * 24,
+      type: "Gatling",
+      damage: data[3],
+      color: data[5],
+      shape: "diamond",
+      size: 10,
+      life: 230,
+      rotation: angle,
+      opacity: 1
+    });
+  }
+
+  charging = false;
+  chargeAmount = 0;
+  player.shootCooldown = 100;
+}
+
+/* ---------------- SUPERS ---------------- */
+
+function useSuper() {
+  if (cards <= 0 || state !== "playing") return;
+
+  cards--;
+  cardProgress = 0;
+
+  const type = currentWeapon()[7];
+
+  if (type === "peaSuper") superBullet(16, 58, "#27f5cc", "giant", 26);
+  if (type === "spreadSuper") {
+    for (let i = -4; i <= 4; i++) {
+      const angle = player.aimAngle + i * .12;
+      superBullet(Math.cos(angle) * 15, Math.sin(angle) * 15, 10, "#ff8b61", "diamond", 8);
+    }
+  }
+  if (type === "chaserSuper") {
+    for (let i = 0; i < 7; i++) {
+      const angle = i * Math.PI * 2 / 7;
+      superBullet(Math.cos(angle) * 4, Math.sin(angle) * 4, 10, "#77bd7a", "eye", 10, true);
+    }
+  }
+  if (type === "longshotSuper") superBullet(player.aimX * 25, player.aimY * 25, 62, "#f54927", "beam", 15);
+  if (type === "chargeSuper") superBullet(player.aimX * 10, player.aimY * 10, 70, "#ffd24d", "star", 32);
+  if (type === "lobSuper") {
+    for (let i = 0; i < 6; i++) {
+      bullets.push({
+        x: 350 + i * 80,
+        y: -20,
+        vx: 0,
+        vy: 7,
+        type: "Super Grenade",
+        damage: 18,
+        color: "#e978d1",
+        shape: "lob",
+        size: 17,
+        life: 150,
+        gravity: .18,
+        rotation: 0,
+        opacity: 1
+      });
+    }
+  }
+  if (type === "flameSuper") {
+    for (let i = 0; i < 12; i++) {
+      const angle = i * Math.PI * 2 / 12;
+      superBullet(Math.cos(angle) * 10, Math.sin(angle) * 10, 10, "#ff4500", "flame", 9);
+    }
+  }
+  if (type === "daggerSuper") {
+    for (let i = 0; i < 4; i++) {
+      setTimeout(() => {
+        if (state !== "playing") return;
+        damageAt(
+          player.x + player.w / 2 + player.aimX * (40 + i * 30),
+          player.y + player.h / 2 + player.aimY * (40 + i * 30),
+          34,
+          22
+        );
+      }, i * 80);
+    }
+  }
+  if (type === "gatlingSuper") {
+    for (let i = -5; i <= 5; i++) {
+      const angle = player.aimAngle + i * .07;
+      superBullet(Math.cos(angle) * 30, Math.sin(angle) * 30, 17, "#4169e1", "diamond", 10);
+    }
+  }
+  if (type === "frostSuper") {
+    for (let i = 0; i < 12; i++) {
+      bullets.push({
+        x: player.x + Math.random() * 500,
+        y: -20 - Math.random() * 220,
+        vx: 0,
+        vy: 6,
+        type: "Super Frost",
+        damage: 12,
+        color: "#87ceeb",
+        shape: "ice",
+        size: 10,
+        life: 170,
+        rotation: 0,
+        opacity: 1
+      });
+    }
+    boss.slow = .4;
+    boss.slowTimer = 240;
+  }
+  if (type === "starSuper") {
+    for (let i = 0; i < 6; i++) {
+      const angle = player.aimAngle + (i - 2.5) * .18;
+      superBullet(Math.cos(angle) * 16, Math.sin(angle) * 16, 16, "#ffd700", "star", 13);
+    }
+  }
+  if (type === "waveSuper") {
+    const gun = gunPosition();
+
+    bullets.push({
+      x: gun.x,
+      y: gun.y,
+      vx: player.aimX * 9,
+      vy: player.aimY * 9,
+      type: "Wave Super",
+      damage: 18,
+      color: "#f29b38",
+      shape: "wave",
+      size: 28,
+      life: 155,
+      rotation: player.aimAngle,
+      hitCooldown: 0,
+      opacity: 1
+    });
+  }
+  if (type === "grenadeSuper") {
+    for (let i = -2; i <= 2; i++) {
+      const angle = player.aimAngle + i * .16;
+
+      bullets.push({
+        x: player.x,
+        y: player.y,
+        vx: Math.cos(angle) * 10,
+        vy: Math.sin(angle) * 10 - 2,
+        type: "Super Grenade",
+        damage: 25,
+        color: "#c86b36",
+        shape: "grenade",
+        size: 10,
+        life: 130,
+        gravity: .2,
+        rotation: 0,
+        opacity: 1
+      });
+    }
+  }
+  if (type === "twistSuper") {
+    for (let i = -5; i <= 5; i++) {
+      const angle = player.aimAngle + i * .13;
+      superBullet(Math.cos(angle) * 13, Math.sin(angle) * 13, 13, "#8d6ce8", "twist", 9);
+    }
+  }
+  if (type === "crackSuper") {
+    for (let i = -6; i <= 6; i++) {
+      const angle = player.aimAngle + i * .11;
+      superBullet(Math.cos(angle) * 17, Math.sin(angle) * 17, 12, "#d5ab3d", "crack", 8);
+    }
+  }
+}
+
+function superBullet(vx, vy, damage, color, shape, size, homing = false) {
+  const gun = gunPosition();
+
+  bullets.push({
+    x: gun.x,
+    y: gun.y,
+    vx,
+    vy,
+    type: "Super",
+    damage,
+    color,
+    shape,
+    size,
+    life: 150,
+    rotation: 0,
+    opacity: 1,
+    homing,
+    returning: false,
+    bounces: 0
+  });
+}
+
+/* ---------------- UPDATE ---------------- */
+
+function update() {
+  if (state !== "playing") return;
+
+  frame++;
+
+  player.shootCooldown--;
+  player.dashCooldown--;
+  player.invincible--;
+  player.parryTimer = Math.max(0, player.parryTimer - 1000 / 60);
+
+  if (slashEffect) {
+    slashEffect.life--;
+    if (slashEffect.life <= 0) slashEffect = null;
+  }
+
+  updateAim();
+  updateMovement();
+
+  player.crouching = keys.s && player.grounded;
+  player.h = player.crouching ? 42 : 64;
+
+  if (keys.k && player.dashCooldown <= 0 && player.dashTimer <= 0) {
+    player.dashTimer = 15;
+    player.dashCooldown = 55;
+    player.invincible = selectedCharm === "smoke" ? 42 : 24;
+    player.dashHit = false;
+  }
+
+  if (player.dashTimer > 0) {
+    player.dashTimer--;
+    player.vx = 13 * player.facing;
+    trails.push({ x: player.x, y: player.y, facing: player.facing, life: 18 });
+
+    if (
+      currentWeapon()[0] === "Dagger" &&
+      !player.dashHit &&
+      circleRectCollision(player.x + player.w / 2, player.y + player.h / 2, 38, boss)
+    ) {
+      damageBoss(currentWeapon()[3]);
+      player.dashHit = true;
+      player.dashTimer = 0;
+      player.vx = -12 * player.facing;
+      player.vy = -8;
+      player.invincible = selectedCharm === "smoke" ? 45 : 30;
+      burst(player.x + player.w / 2, player.y + player.h / 2, "#dce9f0", 20);
+    }
+  }
+
+  if (keys.j) {
+    shoot();
+  } else {
+    if (player.charge > 0) releaseCharge();
+    if (charging) releaseGatling();
+  }
+
+  player.vy += GRAVITY;
+  player.x += player.vx;
+  player.y += player.vy;
+
+  player.x = Math.max(20, Math.min(W - player.w - 20, player.x));
+
+  if (selectedBoss === "platform") {
+    updatePlatformPlayer();
+  } else if (player.y + player.h >= FLOOR) {
+    player.y = FLOOR - player.h;
+    player.vy = 0;
+    player.grounded = true;
+  } else {
+    player.grounded = false;
+  }
+
+  updatePlatform();
+  updateArenaHazard();
+  updatePlayerBullets();
+  updateEnemyBullets();
+  updateMinions();
+  updateBoss();
+  updateEffects();
+
+  if (player.hp <= 0) state = "lost";
+
+  if (selectedBoss === "twins") {
+    if (twins.minion.hp <= 0 && twins.shooter.hp <= 0) state = "won";
+  } else if (boss.hp <= 0) {
+    boss.hp = 0;
+    state = "won";
+  }
+
+  cameraShake *= .9;
+  screenFlash *= .88;
+}
+
+function updatePlatformPlayer() {
+  if (!platform) return;
+
+  const above = player.y + player.h <= platform.y + 15;
+  const horizontal = player.x + player.w > platform.x && player.x < platform.x + platform.w;
+  const landing = player.vy >= 0 && player.y + player.h >= platform.y && above && horizontal;
+
+  if (landing) {
+    player.y = platform.y - player.h;
+    player.vy = 0;
+    player.grounded = true;
+    player.x += platform.vx;
+  } else {
+    player.grounded = false;
+  }
+}
+
+function updatePlatform() {
+  if (!platform) return;
+
+  platform.x += platform.vx;
+
+  if (
+    platform.x < platform.minX ||
+    platform.x + platform.w > platform.maxX
+  ) {
+    platform.vx *= -1;
+  }
+}
+
+function updateArenaHazard() {
+  if (selectedBoss !== "platform" || !platform) return;
+
+  const onPlatform =
+    player.grounded &&
+    Math.abs(player.y + player.h - platform.y) < 3 &&
+    player.x + player.w > platform.x &&
+    player.x < platform.x + platform.w;
+
+  if (player.y + player.h >= FLOOR - 2 && !onPlatform) {
+    if (player.invincible <= 0) {
+      player.hp--;
+      player.invincible = 30;
+      burst(player.x, FLOOR, "#ff3f3f", 20);
+    }
+
+    const platformCenter = platform.x + platform.w / 2;
+    const playerCenter = player.x + player.w / 2;
+    const direction = playerCenter < platformCenter ? -1 : 1;
+
+    player.vy = -11;
+    player.vx = direction * 7;
+    player.y = FLOOR - player.h - 5;
+  }
+}
+
+/* ---------------- TARGETS AND BULLETS ---------------- */
+
+function primaryTarget() {
+  if (selectedBoss === "twins") {
+    if (twins.shooter.hp > 0) return twins.shooter;
+    return twins.minion;
+  }
+
+  return boss;
+}
+
+function allTargets() {
+  const targets = [];
+
+  if (selectedBoss !== "twins" && boss) targets.push(boss);
+
+  if (twins) {
+    if (twins.minion.hp > 0) targets.push(twins.minion);
+    if (twins.shooter.hp > 0) targets.push(twins.shooter);
+  }
+
+  return targets;
+}
+
+function damageBoss(amount) {
+  if (selectedBoss === "twins") {
+    damageTarget(primaryTarget(), amount);
+    return;
+  }
+
+  if (!boss || boss.hp <= 0) return;
+
+  boss.hp -= amount;
+  addDamageProgress(amount);
+  screenFlash = Math.max(screenFlash, .08);
+  cameraShake = Math.max(cameraShake, 3);
+
+  floatingText.push({
+    x: boss.x + boss.w / 2,
+    y: boss.y - 10,
+    text: `-${Math.ceil(amount)}`,
+    life: 38,
+    vy: -.7
+  });
+}
+
+function damageTarget(target, amount) {
+  if (!target || target.hp <= 0) return;
+
+  target.hp -= amount;
+  addDamageProgress(amount);
+
+  floatingText.push({
+    x: target.x + target.w / 2,
+    y: target.y - 10,
+    text: `-${Math.ceil(amount)}`,
+    life: 38,
+    vy: -.7
+  });
+}
+
+function damageAt(x, y, radius, amount) {
+  allTargets().forEach(target => {
+    if (circleRectCollision(x, y, radius, target)) {
+      damageTarget(target, amount);
+    }
+  });
+}
+
+function updatePlayerBullets() {
+  bullets.forEach(bullet => {
+    bullet.x += bullet.vx;
+    bullet.y += bullet.vy;
+    bullet.rotation += .15;
+
+    if (bullet.homing || bullet.type === "Chaser") {
+      const target = primaryTarget();
+
+      if (target) {
+        const dx = target.x + target.w / 2 - bullet.x;
+        const dy = target.y + target.h / 2 - bullet.y;
+        const distance = Math.hypot(dx, dy) || 1;
+
+        bullet.vx += dx / distance * .18;
+        bullet.vy += dy / distance * .18;
+      }
+    }
+
+    if (
+      bullet.type === "Grenade" ||
+      bullet.type === "Super Grenade"
+    ) {
+      bullet.vy += bullet.gravity || .2;
+
+      if (bullet.y > FLOOR - bullet.size) {
+        explode(bullet);
+      }
+    }
+
+    if (bullet.type === "Lobber") {
+      bullet.vy += .18;
+
+      if (bullet.y + bullet.size >= FLOOR && bullet.vy > 0) {
+        bullet.y = FLOOR - bullet.size;
+        bullet.vy = -7;
+        bullet.bounces++;
+
+        if (bullet.bounces >= 3) {
+          bullet.life = 0;
+        }
+      }
+    }
+
+    if (
+      bullet.type === "Shuriken Star" ||
+      bullet.type === "Super Star"
+    ) {
+      if (bullet.returning) {
+        const dx = player.x + player.w / 2 - bullet.x;
+        const dy = player.y + player.h / 2 - bullet.y;
+        const distance = Math.hypot(dx, dy) || 1;
+
+        bullet.vx = dx / distance * 26;
+        bullet.vy = dy / distance * 26;
+
+        if (distance < 28) bullet.life = 0;
+      } else if (
+        bullet.x < 0 ||
+        bullet.x > W ||
+        bullet.y < 0 ||
+        bullet.y > H
+      ) {
+        bullet.returning = true;
+      }
+    }
+
+    if (
+      bullet.type === "EXwave" ||
+      bullet.type === "Wave Super"
+    ) {
+      bullet.size += .65;
+      bullet.hitCooldown--;
+
+      const target = primaryTarget();
+
+      if (
+        target &&
+        bullet.hitCooldown <= 0 &&
+        Math.hypot(
+          target.x + target.w / 2 - bullet.x,
+          target.y + target.h / 2 - bullet.y
+        ) < bullet.size + 40
+      ) {
+        damageTarget(target, bullet.damage);
+        bullet.hitCooldown = 18;
+        burst(bullet.x, bullet.y, bullet.color, 6);
+      }
+    } else if (
+      bullet.type !== "Grenade" &&
+      bullet.type !== "Super Grenade"
+    ) {
+      for (const target of allTargets()) {
+        if (
+          target.hp > 0 &&
+          circleRectCollision(
+            bullet.x,
+            bullet.y,
+            bullet.size || 7,
+            target
+          )
+        ) {
+          damageTarget(target, bullet.damage);
+
+          if (
+            bullet.type === "Shuriken Star" &&
+            !bullet.returning
+          ) {
+            bullet.returning = true;
+          } else if (bullet.type !== "SuperBeam") {
+            bullet.life = 0;
+          }
+
+          burst(bullet.x, bullet.y, bullet.color);
+          break;
+        }
+      }
+    }
+
+    for (const minion of minions) {
+      if (
+        minion.hp > 0 &&
+        circleRectCollision(
+          bullet.x,
+          bullet.y,
+          bullet.size || 7,
+          minion
+        )
+      ) {
+        minion.hp -= bullet.damage;
+        bullet.life = 0;
+        burst(bullet.x, bullet.y, bullet.color);
+      }
+    }
+
+    bullet.life--;
+  });
+
+  bullets = bullets.filter(bullet =>
+    bullet.life > 0 &&
+    bullet.x > -220 &&
+    bullet.x < W + 220 &&
+    bullet.y > -220 &&
+    bullet.y < H + 220
+  );
+}
+
+function explode(bullet) {
+  damageAt(bullet.x, bullet.y, 72, bullet.damage);
+  burst(bullet.x, bullet.y, bullet.color, 24);
+  cameraShake = 8;
+  bullet.life = 0;
+}
+
+/* ---------------- ENEMY BULLETS ---------------- */
+
+function updateEnemyBullets() {
+  enemyBullets.forEach(projectile => {
+    projectile.x += projectile.vx;
+    projectile.y += projectile.vy;
+    projectile.rotation += .12;
+    projectile.life--;
+
+    if (projectile.reflected && projectile.homing) {
+      const target = primaryTarget();
+
+      if (target) {
+        const dx = target.x + target.w / 2 - projectile.x;
+        const dy = target.y + target.h / 2 - projectile.y;
+        const distance = Math.hypot(dx, dy) || 1;
+        const speed = 10;
+
+        projectile.vx +=
+          (dx / distance * speed - projectile.vx) * .12;
+
+        projectile.vy +=
+          (dy / distance * speed - projectile.vy) * .12;
+      }
+    } else {
+      projectile.vy += .01;
+    }
+
+    const target = primaryTarget();
+
+    if (
+      projectile.reflected &&
+      target &&
+      circleRectCollision(
+        projectile.x,
+        projectile.y,
+        projectile.radius,
+        target
+      )
+    ) {
+      damageTarget(target, projectile.damage);
+      projectile.life = 0;
+      burst(projectile.x, projectile.y, "#ffd24d", 16);
+      return;
+    }
+
+    const touchingPlayer = circleRectCollision(
+      projectile.x,
+      projectile.y,
+      projectile.radius,
+      player
+    );
+
+    if (
+      touchingPlayer &&
+      projectile.pink &&
+      player.parryTimer > 0
+    ) {
+      projectile.pink = false;
+      projectile.reflected = true;
+      projectile.homing = true;
+      projectile.damage = 25;
+      projectile.life = 240;
+      projectile.vx = 8;
+      projectile.vy = 0;
+
+      player.vy = -9;
+      player.invincible = 220;
+
+      addCards(selectedCharm === "parry" ? 2 : 1);
+      burst(projectile.x, projectile.y, "#ffd24d", 16);
+      return;
+    }
+
+    if (
+      touchingPlayer &&
+      !projectile.reflected &&
+      player.invincible <= 0
+    ) {
+      player.hp--;
+      player.invincible = 45;
+      projectile.life = 0;
+      burst(player.x, player.y, "#ff5263", 18);
+    }
+  });
+
+  enemyBullets = enemyBullets.filter(projectile =>
+    projectile.life > 0 &&
+    projectile.x > -200 &&
+    projectile.x < W + 200 &&
+    projectile.y > -200 &&
+    projectile.y < H + 200
+  );
+}
+
+/* ---------------- BOSS LOGIC ---------------- */
+
+function updateBoss() {
+  if (boss && boss.slowTimer > 0) {
+    boss.slowTimer--;
+  } else if (boss) {
+    boss.slow = 1;
+  }
+
+  if (selectedBoss === "twins") {
+    updateTwins();
+    return;
+  }
+
+  if (!boss) return;
+
+  boss.phase =
+    boss.hp <= 500 ? 4 :
+    boss.hp <= 1000 ? 3 :
+    boss.hp <= 2000 ? 2 : 1;
+
+  boss.attackTimer -= boss.slow;
+
+  if (boss.type === "minion") updateMinionBoss();
+  if (boss.type === "ceiling") updateCeilingBoss();
+  if (boss.type === "titan") updateTitanBoss();
+  if (boss.type === "platform") updatePlatformBoss();
+}
+
+function updateMinionBoss() {
+  boss.x = 820;
+  boss.y = FLOOR - boss.h;
+  boss.summonTimer--;
+
+  if (boss.summonTimer <= 0) {
+    boss.summonTimer = 180 - boss.phase * 15;
+    spawnMinions(2 + boss.phase);
+  }
+
+  if (boss.attackTimer <= 0) {
+    boss.attackTimer = 95 - boss.phase * 10;
+
+    if (boss.phase === 1) aimBullet(boss, 5, true);
+    if (boss.phase === 2) fan(boss, 6);
+    if (boss.phase >= 3) {
+      radial(boss, 8 + boss.phase);
+      spawnMinions(1);
+    }
+  }
+}
+
+function updateCeilingBoss() {
+  boss.x = 760 + Math.sin(frame / 70) * 120;
+  boss.y = 50 + Math.sin(frame / 40) * 18;
+
+  if (boss.attackTimer <= 0) {
+    boss.attackTimer = Math.max(16, 50 - boss.phase * 7);
+
+    if (boss.phase === 1) rain(boss.phase);
+    if (boss.phase === 2) fanDown(boss);
+    if (boss.phase >= 3) {
+      rain(boss.phase);
+      aimBullet(boss, 6, true);
+    }
+  }
+}
+
+function updateTitanBoss() {
+  boss.y = 200 + Math.sin(frame / 35) * 65;
+
+  if (boss.attackTimer <= 0) {
+    boss.attackTimer = Math.max(30, 100 - boss.phase * 12);
+
+    if (boss.phase === 1) aimBullet(boss, 5, true);
+    if (boss.phase === 2) radial(boss, 8);
+    if (boss.phase === 3) spiral(boss);
+    if (boss.phase === 4) {
+      spiral(boss);
+      fan(boss, 7);
+    }
+  }
+}
+
+function updatePlatformBoss() {
+  boss.x = 820 + Math.sin(frame / 55) * 70;
+  boss.y = 100 + Math.sin(frame / 35) * 20;
+
+  if (boss.attackTimer <= 0) {
+    boss.attackTimer = Math.max(30, 82 - boss.phase * 9);
+
+    if (boss.phase === 1) aimBullet(boss, 5, true);
+    if (boss.phase === 2) orbit(boss);
+    if (boss.phase >= 3) {
+      sweep();
+      spawnMinions(1 + boss.phase);
+    }
+  }
+}
+
+function updateTwins() {
+  if (!twins) return;
+
+  const average = (twins.minion.hp + twins.shooter.hp) / 2;
+
+  twins.phase =
+    average <= 500 ? 4 :
+    average <= 1000 ? 3 :
+    average <= 2000 ? 2 : 1;
+
+  twins.minion.attackTimer--;
+  twins.shooter.attackTimer--;
+
+  if (twins.minion.attackTimer <= 0) {
+    twins.minion.attackTimer = Math.max(55, 120 - twins.phase * 15);
+    spawnTwinMinions();
+  }
+
+  if (twins.shooter.attackTimer <= 0) {
+    twins.shooter.attackTimer = Math.max(35, 90 - twins.phase * 10);
+
+    if (twins.phase === 1) aimAtPoint(twins.shooter, 5, true);
+    if (twins.phase === 2) fan(twins.shooter, 7);
+    if (twins.phase >= 3) {
+      spiral(twins.shooter);
+      aimAtPoint(twins.shooter, 6, true);
+    }
+  }
+}
+
+/* ---------------- BOSS ATTACKS ---------------- */
+
+function fireEnemyBullet(x, y, vx, vy, pink = false) {
+  enemyBullets.push({
+    x,
+    y,
+    vx,
+    vy,
+    pink,
+    reflected: false,
+    homing: false,
+    damage: 1,
+    radius: pink ? 15 : 10,
+    life: 360,
+    rotation: 0
+  });
+}
+
+function aimAtPoint(source, speed, pink) {
+  const sx = source.x + source.w / 2;
+  const sy = source.y + source.h / 2;
+
+  const dx = player.x + player.w / 2 - sx;
+  const dy = player.y + player.h / 2 - sy;
+  const distance = Math.hypot(dx, dy) || 1;
+
+  fireEnemyBullet(
+    sx,
+    sy,
+    dx / distance * speed,
+    dy / distance * speed,
+    pink
+  );
+}
+
+function aimBullet(source, speed, pink) {
+  aimAtPoint(source, speed, pink);
+}
+
+function fan(source, amount) {
+  const sx = source.x + source.w / 2;
+  const sy = source.y + source.h / 2;
+
+  for (let i = 0; i < amount; i++) {
+    const angle = Math.PI + (i - (amount - 1) / 2) * .28;
+    fireEnemyBullet(sx, sy, Math.cos(angle) * 5, Math.sin(angle) * 5, i === Math.floor(amount / 2));
+  }
+}
+
+function radial(source, amount) {
+  const sx = source.x + source.w / 2;
+  const sy = source.y + source.h / 2;
+
+  for (let i = 0; i < amount; i++) {
+    const angle = Math.PI * 2 * i / amount;
+    fireEnemyBullet(sx, sy, Math.cos(angle) * 4, Math.sin(angle) * 4, i % 4 === 0);
+  }
+}
+
+function spiral(source) {
+  const sx = source.x + source.w / 2;
+  const sy = source.y + source.h / 2;
+  const base = frame / 18;
+
+  for (let i = 0; i < 5; i++) {
+    const angle = base + i * Math.PI * 2 / 5;
+    fireEnemyBullet(sx, sy, Math.cos(angle) * 4.5, Math.sin(angle) * 4.5, i === 0);
+  }
+}
+
+function rain(phase) {
+  for (let i = 0; i < 8 + phase; i++) {
+    fireEnemyBullet(
+      70 + i * 105,
+      -20,
+      0,
+      3.5 + phase * .35,
+      i % 3 === 0
+    );
+  }
+}
+
+function fanDown(source) {
+  const sx = source.x + source.w / 2;
+  const sy = source.y + source.h;
+
+  for (let i = 0; i < 9; i++) {
+    const angle = Math.PI / 2 + (i - 4) * .17;
+    fireEnemyBullet(sx, sy, Math.cos(angle) * 5, Math.sin(angle) * 5, i === 4);
+  }
+}
+
+function orbit(source) {
+  const sx = source.x + source.w / 2;
+  const sy = source.y + source.h / 2;
+
+  for (let i = 0; i < 8; i++) {
+    const angle = frame * .04 + i * Math.PI / 4;
+    fireEnemyBullet(sx, sy, Math.cos(angle) * 3.5, Math.sin(angle) * 3.5, i % 4 === 0);
+  }
+}
+
+function sweep() {
+  for (let i = 0; i < 8; i++) {
+    fireEnemyBullet(50 + i * 145, FLOOR - 8, 0, -4.5, i % 3 === 0);
+  }
+}
+
+function spawnMinions(count) {
+  for (let i = 0; i < count; i++) {
+    minions.push({
+      x: 350 + Math.random() * 400,
+      y: FLOOR - 34,
+      w: 34,
+      h: 34,
+      hp: 35,
+      maxHp: 35,
+      vx: 0,
+      vy: 0,
+      jumpTimer: 40 + Math.random() * 80,
+      color: Math.random() > .5 ? "#e5a344" : "#57a9d6"
+    });
+  }
+}
+
+function spawnTwinMinions() {
+  for (let i = 0; i < 2 + twins.phase; i++) {
+    minions.push({
+      x: twins.minion.x + i * 24,
+      y: FLOOR - 34,
+      w: 34,
+      h: 34,
+      hp: 38,
+      maxHp: 38,
+      vx: 0,
+      vy: 0,
+      jumpTimer: 40 + i * 15,
+      color: "#e5a344"
+    });
+  }
+}
+
+/* ---------------- MINIONS ---------------- */
+
+function updateMinions() {
+  minions.forEach(minion => {
+    minion.jumpTimer--;
+
+    if (minion.jumpTimer <= 0) {
+      minion.jumpTimer = 80 + Math.random() * 60;
+      minion.vy = -8;
+    }
+
+    const dx = player.x - minion.x;
+    minion.vx = Math.abs(dx) > 12 ? Math.sign(dx) * 1.5 : 0;
+
+    minion.vy += .45;
+    minion.x += minion.vx;
+    minion.y += minion.vy;
+
+    if (minion.y + minion.h >= FLOOR) {
+      minion.y = FLOOR - minion.h;
+      minion.vy = 0;
+    }
+
+    if (
+      circleRectCollision(
+        minion.x + minion.w / 2,
+        minion.y + minion.h / 2,
+        25,
+        player
+      ) &&
+      player.invincible <= 0
+    ) {
+      player.hp--;
+      player.invincible = 45;
+      burst(player.x, player.y, "#ff5263", 15);
+    }
+  });
+
+  minions = minions.filter(minion => minion.hp > 0);
+}
+
+/* ---------------- EFFECTS ---------------- */
+
+function updateEffects() {
+  particles.forEach(particle => {
+    particle.x += particle.vx;
+    particle.y += particle.vy;
+    particle.vy += particle.gravity ?? .04;
+    particle.life--;
+  });
+
+  particles = particles.filter(particle => particle.life > 0);
+
+  trails.forEach(trail => trail.life--);
+  trails = trails.filter(trail => trail.life > 0);
+
+  floatingText.forEach(text => {
+    text.y += text.vy;
+    text.life--;
+  });
+
+  floatingText = floatingText.filter(text => text.life > 0);
+}
+
+function burst(x, y, color, count = 12) {
+  for (let i = 0; i < count; i++) {
+    particles.push({
+      x,
+      y,
+      vx: Math.random() * 8 - 4,
+      vy: Math.random() * 8 - 4,
+      gravity: .08,
+      color,
+      life: 28 + Math.random() * 25,
+      size: 3 + Math.random() * 5,
+      rotation: Math.random() * Math.PI
+    });
+  }
+}
+
+function circleRectCollision(cx, cy, radius, rect) {
+  if (!rect) return false;
+
+  const x = Math.max(rect.x, Math.min(cx, rect.x + rect.w));
+  const y = Math.max(rect.y, Math.min(cy, rect.y + rect.h));
+  const dx = cx - x;
+  const dy = cy - y;
+
+  return dx * dx + dy * dy < radius * radius;
+}
+
+/* ---------------- DRAWING ---------------- */
+
+function draw() {
+  ctx.save();
+
+  if (cameraShake > 1) {
+    ctx.translate(
+      Math.random() * cameraShake - cameraShake / 2,
+      Math.random() * cameraShake - cameraShake / 2
+    );
+  }
+
+  drawScene();
+  ctx.restore();
+
+  drawVignette();
+
+  if (screenFlash > .01) {
+    ctx.fillStyle = `rgba(255,255,255,${screenFlash})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  drawFloatingText();
+
+  if (state === "won" || state === "lost") {
+    drawEndScreen();
+  }
+}
+
+function drawScene() {
+  const gradient = ctx.createLinearGradient(0, 0, 0, H);
+
+  gradient.addColorStop(0, "#244d78");
+  gradient.addColorStop(.42, "#62aeb5");
+  gradient.addColorStop(.72, "#addbba");
+  gradient.addColorStop(1, "#df985b");
+
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, W, H);
+
+  drawArena();
+  drawPlatform();
+  drawTrails();
+  drawBosses();
+  drawMinions();
+  drawPlayer();
+  drawSlash();
+  drawBullets();
+  drawEnemyBullets();
+  drawParticles();
+  drawUI();
+}
+
+function drawArena() {
+  ctx.fillStyle = selectedBoss === "platform" ? "#461f31" : "#6e594d";
+  ctx.fillRect(0, FLOOR, W, H - FLOOR);
+
+  ctx.fillStyle = selectedBoss === "platform" ? "#e54852" : "#b88759";
+
+  for (let x = 0; x < W; x += 60) {
+    ctx.fillRect(x, FLOOR, 30, 8);
+  }
+
+  if (selectedBoss === "platform") {
+    for (let x = -40; x < W; x += 65) {
+      ctx.beginPath();
+      ctx.moveTo(x, FLOOR);
+      ctx.lineTo(x + 25, H);
+      ctx.lineTo(x + 45, H);
+      ctx.lineTo(x + 18, FLOOR);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+}
+
+function drawPlatform() {
+  if (!platform) return;
+
+  ctx.fillStyle = "#745f8f";
+  ctx.fillRect(platform.x, platform.y, platform.w, platform.h);
+
+  ctx.fillStyle = "#ffd24d";
+  ctx.fillRect(platform.x, platform.y, platform.w, 5);
+}
+
+function drawBosses() {
+  if (selectedBoss === "twins") {
+    drawTwin(twins.minion, "#55a9b5", "#e5a344");
+    drawTwin(twins.shooter, "#ce596c", "#f4d04d");
+    return;
+  }
+
+  if (!boss) return;
+
+  if (boss.type === "minion") drawMinionBoss();
+  if (boss.type === "ceiling") drawCeilingBoss();
+  if (boss.type === "titan") drawTitanBoss();
+  if (boss.type === "platform") drawPlatformBoss();
+}
+
+function drawTwin(target, bodyColor, hatColor) {
+  if (!target || target.hp <= 0) return;
+
+  ctx.fillStyle = bodyColor;
+  ctx.fillRect(target.x, target.y, target.w, target.h);
+
+  ctx.fillStyle = "#f2d6af";
+  ctx.beginPath();
+  ctx.arc(target.x + target.w / 2, target.y + 48, 34, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = hatColor;
+  ctx.fillRect(target.x - 8, target.y - 12, target.w + 16, 18);
+
+  ctx.fillStyle = "#171522";
+  ctx.fillRect(target.x + 42, target.y + 39, 8, 12);
+  ctx.fillRect(target.x + 80, target.y + 39, 8, 12);
+
+  ctx.fillStyle = "#261f34";
+  ctx.fillRect(
+    target.x,
+    target.y - 24,
+    target.w * Math.max(0, target.hp / target.maxHp),
+    6
+  );
+}
+
+function drawMinionBoss() {
+  ctx.fillStyle = "#713b99";
+  ctx.fillRect(boss.x + 18, boss.y + 62, boss.w - 36, boss.h - 62);
+
+  ctx.fillStyle = "#f1c995";
+  ctx.beginPath();
+  ctx.arc(boss.x + boss.w / 2, boss.y + 55, 47, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#ffd24d";
+  ctx.beginPath();
+  ctx.moveTo(boss.x + 20, boss.y + 30);
+  ctx.lineTo(boss.x + 45, boss.y - 20);
+  ctx.lineTo(boss.x + 80, boss.y + 20);
+  ctx.lineTo(boss.x + 110, boss.y - 25);
+  ctx.lineTo(boss.x + 165, boss.y + 30);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = "#171522";
+  ctx.fillRect(boss.x + 58, boss.y + 47, 10, 14);
+  ctx.fillRect(boss.x + 117, boss.y + 47, 10, 14);
+
+  ctx.fillStyle = "#302338";
+  ctx.fillRect(boss.x + 67, boss.y + 78, 56, 11);
+
+  ctx.strokeStyle = "#4a2b35";
+  ctx.lineWidth = 8;
+  ctx.beginPath();
+  ctx.moveTo(boss.x - 8, boss.y + 35);
+  ctx.lineTo(boss.x - 8, boss.y + 170);
+  ctx.stroke();
+
+  ctx.fillStyle = "#ffd24d";
+  ctx.beginPath();
+  ctx.arc(boss.x - 8, boss.y + 28, 15, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawCeilingBoss() {
+  ctx.fillStyle = "#30364f";
+  ctx.fillRect(boss.x, boss.y, boss.w, boss.h);
+
+  ctx.fillStyle = "#596286";
+  ctx.fillRect(boss.x + 20, boss.y + 18, boss.w - 40, boss.h - 48);
+
+  ctx.fillStyle = "#171522";
+  ctx.fillRect(boss.x + 55, boss.y + 35, boss.w - 110, 65);
+
+  ctx.fillStyle = "#ff6673";
+  ctx.fillRect(boss.x + 72, boss.y + 51, 18, 22);
+  ctx.fillRect(boss.x + boss.w - 90, boss.y + 51, 18, 22);
+
+  ctx.fillStyle = "#ffd24d";
+  ctx.fillRect(boss.x + boss.w / 2 - 14, boss.y + boss.h - 25, 28, 60);
+}
+
+function drawTitanBoss() {
+  ctx.fillStyle = "#2b66a6";
+  ctx.fillRect(boss.x + 12, boss.y + 65, boss.w - 24, boss.h - 65);
+
+  ctx.fillStyle = "#f2d6af";
+  ctx.beginPath();
+  ctx.arc(boss.x + boss.w / 2, boss.y + 58, 46, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#f5bd43";
+  ctx.beginPath();
+  ctx.arc(boss.x + boss.w / 2, boss.y + 10, 42, Math.PI, 0);
+  ctx.fill();
+
+  ctx.fillStyle = "#171522";
+  ctx.fillRect(boss.x + 62, boss.y + 47, 10, 14);
+  ctx.fillRect(boss.x + 112, boss.y + 47, 10, 14);
+
+  ctx.fillStyle = "#d94858";
+  ctx.fillRect(boss.x + 64, boss.y + 102, 64, 14);
+}
+
+function drawPlatformBoss() {
+  ctx.fillStyle = "#d87932";
+  ctx.fillRect(boss.x + 15, boss.y + 58, boss.w - 30, boss.h - 58);
+
+  ctx.fillStyle = "#f1c995";
+  ctx.beginPath();
+  ctx.arc(boss.x + boss.w / 2, boss.y + 55, 45, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#ffd24d";
+  ctx.fillRect(boss.x + 28, boss.y + 8, boss.w - 56, 18);
+
+  ctx.fillStyle = "#171522";
+  ctx.fillRect(boss.x + 49, boss.y + 45, 26, 18);
+  ctx.fillRect(boss.x + 113, boss.y + 45, 26, 18);
+
+  ctx.fillStyle = "#70435d";
+  ctx.fillRect(boss.x + 40, boss.y + 105, boss.w - 80, 35);
+}
+
+function drawMinions() {
+  minions.forEach(minion => {
+    ctx.fillStyle = minion.color;
+    ctx.fillRect(minion.x, minion.y + 8, minion.w, minion.h - 8);
+
+    ctx.fillStyle = "#ffe0ae";
+    ctx.fillRect(minion.x + 5, minion.y, minion.w - 10, 18);
+
+    ctx.fillStyle = "#171522";
+    ctx.fillRect(minion.x + 8, minion.y + 7, 5, 7);
+    ctx.fillRect(minion.x + 21, minion.y + 7, 5, 7);
+
+    ctx.fillStyle = "#2c2134";
+    ctx.fillRect(
+      minion.x,
+      minion.y - 10,
+      minion.w * Math.max(0, minion.hp / minion.maxHp),
+      4
+    );
+  });
+}
+
+function drawPlayer() {
+  if (!player) return;
+
+  ctx.save();
+
+  if (player.invincible > 0 && Math.floor(frame / 3) % 2 === 0) {
+    ctx.globalAlpha = .45;
+  }
+
+  const headY = player.crouching ? player.y + 4 : player.y;
+  const bodyY = player.crouching ? player.y + 22 : player.y + 27;
+
+  ctx.translate(player.x + player.w / 2, 0);
+  ctx.scale(player.facing, 1);
+  ctx.translate(-(player.x + player.w / 2), 0);
+
+  ctx.fillStyle = "#211d32";
+  ctx.fillRect(player.x + 7, player.y + 51, 12, 18);
+  ctx.fillRect(player.x + 25, player.y + 51, 12, 18);
+
+  ctx.fillStyle = "#c93f55";
+  ctx.fillRect(player.x + 4, bodyY, 34, player.crouching ? 23 : 30);
+
+  ctx.fillStyle = "#ffe0ae";
+  ctx.fillRect(player.x + 7, headY + 2, 29, 27);
+
+  ctx.fillStyle = "#302338";
+  ctx.fillRect(player.x + 5, headY, 33, 8);
+  ctx.fillRect(player.x + 10, headY - 5, 23, 7);
+
+  ctx.fillStyle = "#171522";
+  ctx.fillRect(player.x + 15, headY + 11, 4, 6);
+  ctx.fillRect(player.x + 27, headY + 11, 4, 6);
+
+  ctx.strokeStyle = "#ffe0ae";
+  ctx.lineWidth = 8;
+  ctx.beginPath();
+  ctx.moveTo(player.x + 34, player.y + 36);
+  ctx.lineTo(
+    player.x + 34 + player.aimX * 23,
+    player.y + 36 + player.aimY * 23
+  );
+  ctx.stroke();
+
+  ctx.strokeStyle = "#28243b";
+  ctx.lineWidth = 7;
+  ctx.beginPath();
+  ctx.moveTo(player.x + 46, player.y + 36);
+  ctx.lineTo(player.x + 67, player.y + 36);
+  ctx.stroke();
+
+  ctx.restore();
+
+  if (player.parryTimer > 0) {
+    ctx.strokeStyle = "#ff76bd";
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.arc(
+      player.x + 21,
+      player.y + 32,
+      selectedCharm === "sugar" ? 50 : 43,
+      0,
+      Math.PI * 2
+    );
+    ctx.stroke();
+  }
+
+  if (movementLocked) {
+    ctx.strokeStyle = "#ffd24d";
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.arc(player.x + 21, player.y + 32, 32, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+function drawSlash() {
+  if (!slashEffect) return;
+
+  ctx.save();
+  ctx.globalAlpha = slashEffect.life / 12;
+  ctx.translate(slashEffect.x, slashEffect.y);
+  ctx.rotate(slashEffect.angle);
+  ctx.strokeStyle = "#e7f4ff";
+  ctx.lineWidth = 11;
+  ctx.beginPath();
+  ctx.moveTo(-35, 0);
+  ctx.lineTo(35, 0);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawTrails() {
+  trails.forEach(trail => {
+    ctx.globalAlpha = trail.life / 20;
+    ctx.fillStyle = "#6f86ff";
+    ctx.fillRect(trail.x, trail.y + 25, 42, 30);
+    ctx.globalAlpha = 1;
+  });
+}
+
+function drawBullets() {
+  bullets.forEach(bullet => {
+    ctx.save();
+
+    ctx.globalAlpha = bullet.opacity ?? 1;
+    ctx.translate(bullet.x, bullet.y);
+    ctx.rotate(bullet.rotation || 0);
+
+    ctx.fillStyle = bullet.color;
+    ctx.shadowColor = bullet.color;
+    ctx.shadowBlur = bullet.type.includes("Super") ? 18 : 8;
+
+    if (bullet.shape === "diamond") {
+      ctx.beginPath();
+      ctx.moveTo(0, -bullet.size);
+      ctx.lineTo(bullet.size, 0);
+      ctx.lineTo(0, bullet.size);
+      ctx.lineTo(-bullet.size, 0);
+      ctx.closePath();
+      ctx.fill();
+    } else if (bullet.shape === "star") {
+      drawStar(0, 0, bullet.size, bullet.size / 2, 5);
+      ctx.fill();
+    } else if (bullet.shape === "wave") {
+      ctx.strokeStyle = bullet.color;
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.arc(0, 0, bullet.size, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (bullet.shape === "beam") {
+      ctx.fillRect(-bullet.size * 2, -bullet.size / 2, bullet.size * 4, bullet.size);
+    } else if (bullet.shape === "grenade") {
+      ctx.beginPath();
+      ctx.arc(0, 0, bullet.size, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#f4cb7a";
+      ctx.fillRect(-2, -bullet.size - 5, 4, 7);
+    } else if (bullet.shape === "twist") {
+      ctx.beginPath();
+      ctx.moveTo(0, -bullet.size);
+      ctx.lineTo(bullet.size, 0);
+      ctx.lineTo(0, bullet.size);
+      ctx.lineTo(-bullet.size, 0);
+      ctx.closePath();
+      ctx.fill();
+    } else if (bullet.shape === "crack") {
+      ctx.fillRect(-bullet.size / 2, -bullet.size, bullet.size, bullet.size * 2);
+    } else if (bullet.shape === "ice") {
+      ctx.beginPath();
+      ctx.moveTo(0, -bullet.size);
+      ctx.lineTo(bullet.size, bullet.size);
+      ctx.lineTo(-bullet.size, bullet.size);
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.arc(0, 0, bullet.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  });
+}
+
+function drawEnemyBullets() {
+  enemyBullets.forEach(projectile => {
+    ctx.save();
+    ctx.translate(projectile.x, projectile.y);
+    ctx.rotate(projectile.rotation);
+
+    ctx.fillStyle = projectile.reflected
+      ? "#ffd24d"
+      : projectile.pink
+        ? "#ff76bd"
+        : "#ff5d5d";
+
+    ctx.beginPath();
+    ctx.arc(0, 0, projectile.radius, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = projectile.reflected ? "#fff5a6" : "#ffe0ef";
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    ctx.restore();
+  });
+}
+
+function drawParticles() {
+  particles.forEach(particle => {
+    ctx.save();
+
+    ctx.globalAlpha = Math.max(0, particle.life / 45);
+
+    if (particle.muzzle) {
+      ctx.translate(particle.x, particle.y);
+      ctx.rotate(particle.angle);
+      ctx.fillStyle = particle.color;
+      ctx.shadowColor = particle.color;
+      ctx.shadowBlur = 20;
+
+      ctx.beginPath();
+      ctx.moveTo(0, -particle.size);
+      ctx.lineTo(particle.size * 1.7, 0);
+      ctx.lineTo(0, particle.size);
+      ctx.lineTo(particle.size * .45, 0);
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      ctx.fillStyle = particle.color;
+      ctx.fillRect(
+        particle.x - particle.size / 2,
+        particle.y - particle.size / 2,
+        particle.size,
+        particle.size
+      );
+    }
+
+    ctx.restore();
+  });
+}
+
+function drawUI() {
+  if (!player) return;
+
+  ctx.fillStyle = "rgba(23,21,34,.86)";
+  ctx.fillRect(18, 480, 380, 150);
+
+  ctx.fillStyle = "#fff1bf";
+  ctx.font = "bold 17px Arial";
+  ctx.fillText("HP", 30, 510);
+
+  for (let i = 0; i < player.maxHp; i++) {
+    ctx.fillStyle = i < player.hp ? "#ff6680" : "#56364c";
+    ctx.strokeStyle = "#fff1bf";
+
+    ctx.beginPath();
+    ctx.arc(78 + i * 30, 504, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = "#fff1bf";
+  ctx.fillText("SUPER", 30, 545);
+
+  for (let i = 0; i < MAX_CARDS; i++) {
+    ctx.fillStyle = i < cards ? "#ffd24d" : "#5b4657";
+    ctx.strokeStyle = "#fff1bf";
+
+    ctx.beginPath();
+    ctx.arc(100 + i * 28, 539, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = "#3c2b3d";
+  ctx.fillRect(30, 560, 245, 12);
+
+  ctx.fillStyle = "#ffd24d";
+  ctx.fillRect(
+    30,
+    560,
+    245 * Math.min(1, cardProgress / DAMAGE_PER_CARD),
+    12
+  );
+
+  ctx.fillStyle = "#fff1bf";
+  ctx.font = "15px Arial";
+  ctx.fillText(`Weapon: ${currentWeapon()[0]}`, 30, 598);
+
+  if (movementLocked) {
+    ctx.fillStyle = "#ffd24d";
+    ctx.fillText("MOVEMENT LOCKED", 185, 598);
+  }
+
+  if (player.charge > 0) {
+    ctx.fillStyle = "#ffd24d";
+    ctx.fillText(`Charge: ${Math.ceil(player.charge)}%`, 30, 455);
+  }
+
+  ctx.fillStyle = "#171522";
+  ctx.fillRect(680, 24, 390, 24);
+
+  ctx.fillStyle = "#d94858";
+  ctx.fillRect(680, 24, 390 * bossRatio(), 24);
+
+  ctx.fillStyle = "#fff";
+  ctx.font = "18px Arial";
+  ctx.fillText(`BOSS: ${Math.ceil(bossHealth())}`, 920, 42);
+}
+
+function bossHealth() {
+  if (selectedBoss === "twins") {
+    return Math.max(0, twins.minion.hp + twins.shooter.hp);
+  }
+
+  return Math.max(0, boss.hp);
+}
+
+function bossRatio() {
+  if (selectedBoss === "twins") {
+    return Math.max(0, (twins.minion.hp + twins.shooter.hp) / 1900);
+  }
+
+  return Math.max(0, boss.hp / boss.maxHp);
+}
+
+function drawVignette() {
+  const gradient = ctx.createRadialGradient(
+    W / 2,
+    H / 2,
+    180,
+    W / 2,
+    H / 2,
+    700
+  );
+
+  gradient.addColorStop(0, "rgba(0,0,0,0)");
+  gradient.addColorStop(1, "rgba(5,7,18,.45)");
+
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawFloatingText() {
+  floatingText.forEach(text => {
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, text.life / 20);
+    ctx.fillStyle = "#fff1bf";
+    ctx.font = "bold 20px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(text.text, text.x, text.y);
+    ctx.restore();
+  });
+
+  ctx.textAlign = "left";
+}
+
+function drawEndScreen() {
+  ctx.fillStyle = "rgba(23,21,34,.84)";
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = state === "won" ? "#ffd24d" : "#ff6b6b";
+  ctx.font = "62px Arial";
+
+  ctx.fillText(
+    state === "won" ? "BOSS DEFEATED!" : "KNOCKOUT!",
+    W / 2,
+    290
+  );
+
+  ctx.font = "24px Arial";
+  ctx.fillStyle = "#fff";
+  ctx.fillText(
+    "Press R to return to the menu",
+    W / 2,
+    350
+  );
+
+  ctx.textAlign = "left";
+}
+
+function drawStar(x, y, outer, inner, points) {
+  ctx.beginPath();
+
+  for (let i = 0; i < points * 2; i++) {
+    const angle = -Math.PI / 2 + i * Math.PI / points;
+    const radius = i % 2 === 0 ? outer : inner;
+    const px = x + Math.cos(angle) * radius;
+    const py = y + Math.sin(angle) * radius;
+
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+
+  ctx.closePath();
+}
+
+/* ---------------- SINGLE GAME LOOP ---------------- */
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
